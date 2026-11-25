@@ -1,0 +1,29 @@
+# Secrets & API Keys (NEVER commit this!)
+.env
+.env.*
+
+# Virtual Environments
+.venv/
+venv/
+env/
+
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Testing & Formatter Caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Scraped Output / Local Logs / Temp Data
+*.log
+output/
+data/
+
+# IDE & OS Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

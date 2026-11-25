@@ -1,0 +1,29 @@
+
+# Core LangChain
+langchain>=1.0.0,<2.0.0
+langchain-core>=1.0.0,<2.0.0
+langgraph>=1.0.0,<2.0.0
+
+# OpenAI
+langchain-openai>=1.0.0,<2.0.0
+openai>=2.0.0
+
+# Tavily Integration
+langchain-tavily>=0.2.0
+
+# Web Scraping
+beautifulsoup4>=4.12.0
+requests>=2.32.0
+lxml>=5.0.0
+
+# Environment
+python-dotenv>=1.0.0
+
+# Data Validation
+pydantic>=2.0.0
+
+# Monitoring (Optional)
+langsmith>=0.3.0
+
+# Testing
+pytest>=8.0.0
