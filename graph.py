@@ -2,7 +2,10 @@ import re
 from typing import TypedDict
 
 from langgraph.graph import StateGraph, START, END
-
+from observability.tracker import track_node
+from observability.callbacks import TokenUsageCallback
+from observability.metrics import save_model_usage
+from observability.usage import tracked_invoke
 from agents import build_search_agent, build_writer_chain
 from tools import fetch_document
 from evidence import (
@@ -45,6 +48,13 @@ from memory.history_repository import (
 from memory.historical_conflicts import (
     analyze_historical_changes,
 )
+
+
+# ============================================================
+# MODEL PRICING RATES (USD per 1M tokens for gpt-4o-mini)
+# ============================================================
+INPUT_PRICE_PER_MILLION = 0.15
+OUTPUT_PRICE_PER_MILLION = 0.60
 
 
 # ============================================================
@@ -168,14 +178,29 @@ def memory_initialization_node(state: ResearchState):
 
 
 # ============================================================
-# NODE 0: RESEARCH PLANNER (V3.5)
+# NODE 0: RESEARCH PLANNER (V3.5 + TOKEN TRACKING)
 # ============================================================
 def research_planner_node(state: ResearchState):
     print("\n[PLANNER] Creating research plan")
 
+    usage_tracker = TokenUsageCallback()
+
     plan = create_research_plan(
         topic=state["topic"],
         max_questions=8,
+        config={"callbacks": [usage_tracker]},
+    )
+
+    usage = usage_tracker.get_summary()
+
+    save_model_usage(
+        run_id=state["run_id"],
+        node_name="research_planner",
+        model_name="gpt-4o-mini",
+        prompt_tokens=usage["prompt_tokens"],
+        completion_tokens=usage["completion_tokens"],
+        input_price_per_million=INPUT_PRICE_PER_MILLION,
+        output_price_per_million=OUTPUT_PRICE_PER_MILLION,
     )
 
     print(f"[PLANNER] Created {len(plan['research_questions'])} questions")
@@ -197,14 +222,10 @@ def technical_researcher(state: ResearchState):
     prompt = f"""
 Research topic: {state['topic']}
 
-RESEARCH QUESTIONS TO INVESTIGATE:
+RESEARCH QUESTIONS:
 {questions_text}
 
-Research these questions directly.
-Prioritize high-importance questions.
-Identify which questions have insufficient evidence.
-
-Your research focus:
+Research focus:
 - Scientific breakthroughs
 - Engineering developments
 - Technical evidence
@@ -215,18 +236,19 @@ Additional research requirements:
 {feedback}
 
 Find relevant sources, dates, evidence and URLs.
-
-Distinguish:
-- Peer-reviewed research
-- Preprints
-- Official technical documentation
-- Company announcements
-- Speculation
+Distinguish peer-reviewed research, preprints, official documentation,
+company announcements and speculation.
 
 Return findings with source titles and original URLs.
 """
 
-    result = agent.invoke({"input": prompt})
+    result = tracked_invoke(
+        agent,
+        {"input": prompt},
+        run_id=state["run_id"],
+        node_name="technical_researcher",
+    )
+
     return {"search_a": result["output"]}
 
 
@@ -245,14 +267,10 @@ def industry_researcher(state: ResearchState):
     prompt = f"""
 Research topic: {state['topic']}
 
-RESEARCH QUESTIONS TO INVESTIGATE:
+RESEARCH QUESTIONS:
 {questions_text}
 
-Research these questions directly.
-Prioritize high-importance questions.
-Identify which questions have insufficient evidence.
-
-Your research focus:
+Research focus:
 - Industry developments
 - Commercialization
 - Market trends
@@ -270,7 +288,13 @@ Distinguish verified product releases from announcements,
 marketing claims and speculation.
 """
 
-    result = agent.invoke({"input": prompt})
+    result = tracked_invoke(
+        agent,
+        {"input": prompt},
+        run_id=state["run_id"],
+        node_name="industry_researcher",
+    )
+
     return {"search_b": result["output"]}
 
 
@@ -534,7 +558,6 @@ def historical_comparison_node(state: ResearchState):
 
     previous_claims = get_previous_claims(fingerprints)
 
-    # Convert ORM objects to dicts if get_previous_claims returns ClaimSnapshot models
     serialized_previous = [
         item if isinstance(item, dict) else {
             "claim_fingerprint": item.claim_fingerprint,
@@ -832,13 +855,18 @@ REPORT REQUIREMENTS
     contradicted or insufficiently supported.
 """
 
-    report = writer.invoke({
-        "topic": state["topic"],
-        "notes": report_notes,
-        "previous_claims": state.get("previous_claims", []),
-        "historical_comparison": state.get("historical_comparison", {}),
-        "historical_conflicts": state.get("historical_conflicts", []),
-    })
+    report = tracked_invoke(
+        writer,
+        {
+            "topic": state["topic"],
+            "notes": report_notes,
+            "previous_claims": state.get("previous_claims", []),
+            "historical_comparison": state.get("historical_comparison", {}),
+            "historical_conflicts": state.get("historical_conflicts", []),
+        },
+        run_id=state["run_id"],
+        node_name="writer",
+    )
 
     return {"final_report": report}
 
@@ -911,24 +939,24 @@ def persist_research_memory_node(state: ResearchState):
 def build_research_graph():
     graph = StateGraph(ResearchState)
 
-    # Register all nodes
+    # Register all nodes (instrumented with track_node)
     graph.add_node("memory_initialization", memory_initialization_node)
-    graph.add_node("research_planner", research_planner_node)
-    graph.add_node("technical_researcher", technical_researcher)
-    graph.add_node("industry_researcher", industry_researcher)
-    graph.add_node("aggregator", aggregate_research)
-    graph.add_node("reader", reader_node)
-    graph.add_node("incremental_planner", incremental_planning_node)
-    graph.add_node("source_intelligence", source_intelligence_node)
-    graph.add_node("verifier", verification_node)
-    graph.add_node("contradiction", contradiction_node)
-    graph.add_node("historical_comparison", historical_comparison_node)
-    graph.add_node("gap_evaluator", gap_evaluation_node)
-    graph.add_node("quality_evaluator", quality_evaluation_node)
-    graph.add_node("prepare_retry", prepare_retry_node)
-    graph.add_node("writer", writer_node)
-    graph.add_node("save_claim_history", save_claim_history_node)
-    graph.add_node("persist_memory", persist_research_memory_node)
+    graph.add_node("research_planner", track_node("research_planner", research_planner_node))
+    graph.add_node("technical_researcher", track_node("technical_researcher", technical_researcher))
+    graph.add_node("industry_researcher", track_node("industry_researcher", industry_researcher))
+    graph.add_node("aggregator", track_node("aggregator", aggregate_research))
+    graph.add_node("reader", track_node("reader", reader_node))
+    graph.add_node("incremental_planner", track_node("incremental_planner", incremental_planning_node))
+    graph.add_node("source_intelligence", track_node("source_intelligence", source_intelligence_node))
+    graph.add_node("verifier", track_node("verifier", verification_node))
+    graph.add_node("contradiction", track_node("contradiction", contradiction_node))
+    graph.add_node("historical_comparison", track_node("historical_comparison", historical_comparison_node))
+    graph.add_node("gap_evaluator", track_node("gap_evaluator", gap_evaluation_node))
+    graph.add_node("quality_evaluator", track_node("quality_evaluator", quality_evaluation_node))
+    graph.add_node("prepare_retry", track_node("prepare_retry", prepare_retry_node))
+    graph.add_node("writer", track_node("writer", writer_node))
+    graph.add_node("save_claim_history", track_node("save_claim_history", save_claim_history_node))
+    graph.add_node("persist_memory", track_node("persist_memory", persist_research_memory_node))
 
     # 1. Initialize persistent memory, then plan
     graph.add_edge(START, "memory_initialization")

@@ -60,38 +60,35 @@ def get_planning_llm():
 def create_research_plan(
     topic: str,
     max_questions: int = 8,
+    config=None,
 ) -> dict:
-
     llm = get_planning_llm().with_structured_output(
         ResearchPlan
     )
 
     prompt = f"""
-You are an expert research planning system.
+    You are an expert research planning system.
 
-Create a research plan for this topic:
+    Create a research plan for this topic:
+    {topic}
 
-{topic}
+    Requirements:
+    1. Create no more than {max_questions} questions.
+    2. Questions must be specific, answerable and non-duplicative.
+    3. Cover technical foundations and mechanisms.
+    4. Cover recent developments and evidence.
+    5. Cover practical applications and industry adoption.
+    6. Cover limitations, risks and unresolved problems.
+    7. Include comparisons or benchmarks when relevant.
+    8. Prioritize important questions as high, medium or low.
+    9. Do not assume facts that have not been researched.
 
-Requirements:
+    Return a structured research plan.
+    """
 
-1. Create no more than {max_questions} questions.
-2. Questions must be specific, answerable and non-duplicative.
-3. Cover technical foundations and mechanisms.
-4. Cover recent developments and evidence.
-5. Cover practical applications and industry adoption.
-6. Cover limitations, risks and unresolved problems.
-7. Include comparisons or benchmarks when relevant.
-8. Prioritize important questions as high, medium or low.
-9. Do not assume facts that have not been researched.
-
-Return a structured research plan.
-"""
-
-    result = llm.invoke(prompt)
+    result = llm.invoke(prompt, config=config)
 
     questions = []
-
     for index, item in enumerate(result.questions, start=1):
         questions.append({
             "question_id": f"Q{index}",
@@ -107,8 +104,9 @@ Return a structured research plan.
         "research_objective": result.objective,
         "research_questions": questions,
     }
-
-
+    
+    
+    
 # EVIDENCE ID NORMALIZATION
 def normalize_evidence_records(
     evidence_records: list[dict],

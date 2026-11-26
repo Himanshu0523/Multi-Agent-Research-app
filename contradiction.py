@@ -11,9 +11,9 @@ from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 
 
-# ============================================================
+    
 # CONFIGURATION
-# ============================================================
+    
 
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
@@ -22,9 +22,9 @@ MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 CONTRADICTION_CONFIDENCE_THRESHOLD = 0.75
 
 
-# ============================================================
+    
 # PYDANTIC SCHEMAS
-# ============================================================
+    
 
 class NormalizedClaim(BaseModel):
     """A normalized representation of a factual research claim."""
@@ -108,9 +108,9 @@ class ClaimComparison(BaseModel):
     )
 
 
-# ============================================================
+    
 # HELPERS
-# ============================================================
+    
 
 def create_claim_id(claim: str) -> str:
     """Generate a deterministic ID for a claim."""
@@ -189,9 +189,9 @@ def normalize_attribute(value: str) -> str:
     return clean_text(value).lower()
 
 
-# ============================================================
+    
 # NODE 1: NORMALIZE CLAIMS
-# ============================================================
+    
 
 def normalize_claims(
     evidence_records: list[dict],
@@ -290,9 +290,9 @@ Evidence record:
     return normalized_claims
 
 
-# ============================================================
+    
 # NODE 2: GENERATE COMPARISON CANDIDATES
-# ============================================================
+    
 
 def generate_candidate_pairs(
     normalized_claims: list[dict],
@@ -333,9 +333,9 @@ def generate_candidate_pairs(
     return candidates
 
 
-# ============================================================
+    
 # NODE 3: COMPARE CLAIM PAIRS
-# ============================================================
+    
 
 def compare_claim_pair(
     first: dict,
@@ -419,9 +419,9 @@ Return a structured comparison.
     }
 
 
-# ============================================================
+    
 # NODE 4: DETECT CONTRADICTIONS
-# ============================================================
+    
 
 def detect_contradictions(
     evidence_records: list[dict],
@@ -512,9 +512,9 @@ def detect_contradictions(
     }
 
 
-# ============================================================
+    
 # SOURCE RELATIONSHIP HELPERS
-# ============================================================
+    
 
 def find_shared_source_relationships(
     source_ids: list[str],
@@ -552,9 +552,9 @@ def find_shared_source_relationships(
     return relevant
 
 
-# ============================================================
+    
 # NODE 5: BUILD CONFLICT REPORT
-# ============================================================
+    
 
 def build_conflict_report(
     claim_comparisons: list[dict],
@@ -648,9 +648,9 @@ def build_conflict_report(
     }
 
 
-# ============================================================
+    
 # OPTIONAL: HUMAN-READABLE REPORT
-# ============================================================
+    
 
 def format_conflict_report(report: dict) -> str:
     """Convert the structured report into readable text."""
