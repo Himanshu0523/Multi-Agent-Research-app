@@ -30,6 +30,30 @@ class ClaimExtraction(BaseModel):
     claims: list[ResearchClaim] = Field(
         description="Claims extracted from the research"
     )
+
+
+def generate_evidence_id(
+    source_id: str,
+    claim: str,
+    quote: str,
+) -> str:
+
+    def normalize(text):
+        return re.sub(
+            r"\s+", " ", text.lower()
+        ).strip()
+
+    identity = "|".join([
+        source_id,
+        normalize(claim),
+        normalize(quote),
+    ])
+
+    digest = hashlib.sha256(
+        identity.encode("utf-8")
+    ).hexdigest()
+
+    return f"ev_{digest[:24]}"
     
     
 def extract_research_claims(
@@ -178,7 +202,13 @@ def build_evidence_records(
         else:
             final_status = claim.status
 
-        records.append({
+        evidence_record = {
+            "evidence_id": generate_evidence_id(
+                source_id=claim.source_id,
+                claim=claim.claim,
+                quote=claim.evidence_quote,
+            ),
+
             "claim_id": generate_claim_id(
                 claim.claim
             ),
@@ -198,6 +228,8 @@ def build_evidence_records(
             "status": final_status,
 
             "explanation": claim.explanation,
-        })
+        }
+
+        records.append(evidence_record)
 
     return records

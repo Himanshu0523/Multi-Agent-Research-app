@@ -5,6 +5,7 @@ from langchain.agents import create_agent
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnableLambda
 
 from tools import web_Search, scrape_url
 
@@ -20,7 +21,6 @@ def get_llm(temperature=0):
 
 
 # AGENT 1: RESEARCHER
-
 def build_search_agent(focus: str = "general research"):
 
     llm = get_llm()
@@ -92,6 +92,9 @@ def build_writer_chain():
 
                 Do not invent facts, statistics or citations.
                 Distinguish verified findings from uncertainty.
+                Do not automatically assume a newer finding is correct
+                simply because it is more recent—always weigh source
+                authority, reporting period, and methodology.
                 """,
             ),
             (
@@ -102,14 +105,43 @@ def build_writer_chain():
                 Research Notes:
                 {notes}
 
+                Historical Research Analysis:
+
+                Previous research findings:
+                {previous_claims}
+
+                Historical comparison:
+                {historical_comparison}
+
+                Historical conflicts:
+                {historical_conflicts}
+
                 Write a structured report containing:
 
                 1. Introduction
                 2. Background
                 3. Key Findings
-                4. Detailed Analysis
-                5. Conclusion
-                6. Sources (include available URLs)
+                4. Historical Changes
+                5. Detailed Analysis
+                6. Conclusion
+                7. Sources (include available URLs)
+
+                In the "Historical Changes" section, explain:
+                1. Which findings remain unchanged.
+                2. Which findings are newly discovered.
+                3. Which previously supported claims are now contradicted
+                   or insufficiently supported.
+                4. Which conclusions require additional investigation.
+
+                Rules for Historical Changes:
+                - Do not claim that a previous finding is false merely because
+                  it is absent from the latest research.
+                - Clearly distinguish:
+                  * New evidence
+                  * Changed evidence
+                  * Changed verification status
+                  * Actual logical contradiction
+                - Never conceal unresolved conflicts.
 
                 Maintain clarity, accuracy and neutrality.
                 """,
@@ -117,9 +149,20 @@ def build_writer_chain():
         ]
     )
 
+    # Ensure default values are supplied if optional historical keys are omitted
+    def prepare_inputs(inputs: dict) -> dict:
+        return {
+            "topic": inputs["topic"],
+            "notes": inputs.get("notes", ""),
+            "previous_claims": inputs.get("previous_claims", []),
+            "historical_comparison": inputs.get("historical_comparison", {}),
+            "historical_conflicts": inputs.get("historical_conflicts", []),
+        }
+
     # LCEL Runnable Pipeline
     writer_chain = (
-        writer_prompt
+        RunnableLambda(prepare_inputs)
+        | writer_prompt
         | llm
         | StrOutputParser()
     )

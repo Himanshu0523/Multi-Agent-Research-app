@@ -9,7 +9,7 @@ from evidence import (
     extract_research_claims,
     build_evidence_records,
 )
-from test.source_intelligence import (
+from source_intelligence import (
     analyze_source,
     classify_source_with_llm,
 )
@@ -18,11 +18,32 @@ from contradiction import (
     detect_contradictions,
     build_conflict_report,
 )
+from memory.incremental import build_incremental_plan
+from memory.evidence_diff import compare_claims
 from quality import evaluate_research_quality
 from gap_planner import (
     create_research_plan,
     assess_question_coverage,
     build_gap_feedback,
+)
+from memory.database import init_database
+from memory.repository import (
+    create_run,
+    get_previous_runs,
+    save_source,
+    save_evidence,
+    complete_run,
+)
+from memory.claim_history import (
+    create_claim_snapshot,
+    fingerprint_claim,
+)
+from memory.history_repository import (
+    save_claim_snapshots,
+    get_previous_claims,
+)
+from memory.historical_conflicts import (
+    analyze_historical_changes,
 )
 
 
@@ -67,6 +88,26 @@ class ResearchState(TypedDict, total=False):
     max_retries: int
     research_feedback: str
 
+    # Persistent memory (V3.6)
+    run_id: str
+    previous_runs: list
+    reused_sources: list
+    memory_enabled: bool
+
+    # Incremental research (V3.7)
+    incremental_plan: dict
+    unchanged_sources: list
+    changed_sources: list
+    new_sources: list
+    failed_sources: list
+
+    # Historical claim tracking (V3.8)
+    previous_claims: list
+    claim_snapshots: list
+    historical_comparison: dict
+    historical_conflicts: list
+    historical_review_required: bool
+
     # Final output
     final_report: str
 
@@ -105,6 +146,28 @@ def format_questions_for_prompt(research_questions: list[dict]) -> str:
 
 
 # ============================================================
+# NODE -1: MEMORY INITIALIZATION (V3.6)
+# ============================================================
+def memory_initialization_node(state: ResearchState):
+    print("\n[MEMORY] Initializing research run and checking history")
+    init_database()
+
+    topic = state["topic"]
+    run_id = state.get("run_id") or create_run(topic)
+    previous_runs = get_previous_runs(topic)
+
+    print(f"[MEMORY] Run ID: {run_id} | Previous runs found: {len(previous_runs)}")
+
+    return {
+        "run_id": run_id,
+        "previous_runs": previous_runs,
+        "reused_sources": [],
+        "new_sources": [],
+        "memory_enabled": True,
+    }
+
+
+# ============================================================
 # NODE 0: RESEARCH PLANNER (V3.5)
 # ============================================================
 def research_planner_node(state: ResearchState):
@@ -119,7 +182,9 @@ def research_planner_node(state: ResearchState):
     return plan
 
 
+# ============================================================
 # NODE 1: TECHNICAL RESEARCHER
+# ============================================================
 def technical_researcher(state: ResearchState):
     print("\n[AGENT A] Technical research started")
 
@@ -165,7 +230,9 @@ Return findings with source titles and original URLs.
     return {"search_a": result["output"]}
 
 
+# ============================================================
 # NODE 2: INDUSTRY RESEARCHER
+# ============================================================
 def industry_researcher(state: ResearchState):
     print("\n[AGENT B] Industry research started")
 
@@ -207,7 +274,9 @@ marketing claims and speculation.
     return {"search_b": result["output"]}
 
 
+# ============================================================
 # NODE 3: AGGREGATOR
+# ============================================================
 def aggregate_research(state: ResearchState):
     print("\n[AGGREGATOR] Combining research findings")
 
@@ -229,7 +298,9 @@ INDUSTRY RESEARCH
     return {"combined_search": combined}
 
 
+# ============================================================
 # NODE 4: READER
+# ============================================================
 def reader_node(state: ResearchState):
     print("\n[READER] Collecting source documents")
 
@@ -286,7 +357,42 @@ def reader_node(state: ResearchState):
     }
 
 
+# ============================================================
+# NODE 4.5: INCREMENTAL PLANNER (V3.7)
+# ============================================================
+def incremental_planning_node(state: ResearchState):
+    print("\n[INCREMENTAL] Checking sources against stored memory")
+
+    all_sources = state.get("sources", [])
+    fetched_sources = get_successful_sources(all_sources)
+    fetch_failures = [
+        {"url": s.get("url"), "error": s.get("error", "fetch_failed")}
+        for s in all_sources
+        if s.get("status") != "fetched"
+    ]
+
+    plan = build_incremental_plan(fetched_sources)
+    combined_failures = fetch_failures + plan["failed_sources"]
+
+    print(
+        f"[INCREMENTAL] Unchanged: {len(plan['unchanged_sources'])} | "
+        f"Changed: {len(plan['changed_sources'])} | "
+        f"New: {len(plan['new_sources'])} | "
+        f"Failed: {len(combined_failures)}"
+    )
+
+    return {
+        "incremental_plan": plan,
+        "unchanged_sources": plan["unchanged_sources"],
+        "changed_sources": plan["changed_sources"],
+        "new_sources": plan["new_sources"],
+        "failed_sources": combined_failures,
+    }
+
+
+# ============================================================
 # NODE 5: SOURCE INTELLIGENCE
+# ============================================================
 def source_intelligence_node(state: ResearchState):
     print("\n[SOURCE INTELLIGENCE] Analyzing sources")
 
@@ -314,7 +420,9 @@ def source_intelligence_node(state: ResearchState):
     }
 
 
+# ============================================================
 # NODE 6: EVIDENCE VERIFICATION
+# ============================================================
 def verification_node(state: ResearchState):
     print("\n[VERIFIER] Extracting claims and checking evidence")
 
@@ -384,7 +492,9 @@ def verification_node(state: ResearchState):
     }
 
 
+# ============================================================
 # NODE 7: CONTRADICTION DETECTION (V3.3)
+# ============================================================
 def contradiction_node(state: ResearchState):
     print("\n[CONTRADICTION] Detecting conflicting claims")
 
@@ -409,7 +519,55 @@ def contradiction_node(state: ResearchState):
     }
 
 
+# ============================================================
+# NODE 7.5: HISTORICAL CLAIM COMPARISON (V3.8)
+# ============================================================
+def historical_comparison_node(state: ResearchState):
+    print("\n[HISTORY] Comparing claims against historical runs")
+
+    current_claims = state.get("normalized_claims", [])
+    fingerprints = [
+        fingerprint_claim(item["claim"])
+        for item in current_claims
+        if item.get("claim")
+    ]
+
+    previous_claims = get_previous_claims(fingerprints)
+
+    # Convert ORM objects to dicts if get_previous_claims returns ClaimSnapshot models
+    serialized_previous = [
+        item if isinstance(item, dict) else {
+            "claim_fingerprint": item.claim_fingerprint,
+            "claim_text": item.claim_text,
+            "verification_status": item.verification_status,
+            "evidence_summary": item.evidence_summary,
+        }
+        for item in previous_claims
+    ]
+
+    result = analyze_historical_changes(
+        current_claims=current_claims,
+        previous_claims=serialized_previous,
+    )
+
+    print(
+        f"[HISTORY] Unchanged: {len(result['comparison']['unchanged'])} | "
+        f"New: {len(result['comparison']['new_claims'])} | "
+        f"Status Changed: {len(result['comparison']['status_changed'])} | "
+        f"Conflicts: {len(result['historical_conflicts'])}"
+    )
+
+    return {
+        "previous_claims": serialized_previous,
+        "historical_comparison": result["comparison"],
+        "historical_conflicts": result["historical_conflicts"],
+        "historical_review_required": result["requires_attention"],
+    }
+
+
+# ============================================================
 # NODE 8: GAP EVALUATOR (V3.5)
+# ============================================================
 def gap_evaluation_node(state: ResearchState):
     print("\n[GAP EVALUATOR] Checking research coverage")
 
@@ -443,7 +601,9 @@ def gap_evaluation_node(state: ResearchState):
     }
 
 
+# ============================================================
 # NODE 9: RESEARCH QUALITY EVALUATOR (V3.4)
+# ============================================================
 def quality_evaluation_node(state: ResearchState):
     print("\n[QUALITY] Evaluating research quality")
 
@@ -465,11 +625,12 @@ def quality_evaluation_node(state: ResearchState):
     }
 
 
+# ============================================================
 # NODE 10: PREPARE RETRY
+# ============================================================
 def prepare_retry_node(state: ResearchState):
     next_retry = state.get("retry_count", 0) + 1
 
-    # Prefer gap-driven feedback from gap_evaluator; fall back to missing_evidence
     gap_feedback = state.get("research_feedback", "").strip()
     missing = state.get("missing_evidence", [])
 
@@ -497,7 +658,9 @@ def prepare_retry_node(state: ResearchState):
     }
 
 
+# ============================================================
 # CONDITIONAL ROUTER
+# ============================================================
 def route_after_verification(state: ResearchState):
     verification_status = state.get("verification_status", "research_more")
     quality_status = state.get("quality_status", "needs_review")
@@ -529,7 +692,9 @@ def route_after_verification(state: ResearchState):
     return "writer"
 
 
+# ============================================================
 # NODE 11: FINAL WRITER
+# ============================================================
 def writer_node(state: ResearchState):
     print("\n[WRITER] Generating evidence-linked report")
 
@@ -558,6 +723,24 @@ REMAINING RESEARCH GAPS
 =======================
 
 {state.get('research_gaps', [])}
+
+
+INCREMENTAL SOURCE SUMMARY
+==========================
+
+Unchanged Sources: {len(state.get('unchanged_sources', []))}
+Changed Sources: {len(state.get('changed_sources', []))}
+New Sources: {len(state.get('new_sources', []))}
+Failed Sources: {len(state.get('failed_sources', []))}
+
+
+HISTORICAL RESEARCH ANALYSIS
+============================
+
+Previous Research Findings: {state.get('previous_claims', [])}
+Historical Comparison: {state.get('historical_comparison', {})}
+Historical Conflicts: {state.get('historical_conflicts', [])}
+Historical Review Required: {state.get('historical_review_required', False)}
 
 
 RESEARCH FINDINGS
@@ -643,14 +826,83 @@ REPORT REQUIREMENTS
 12. Do not claim complete research when important gaps remain.
 
 13. Explain when the retry limit prevented further investigation.
+
+14. Include a "Historical Changes" section explaining unchanged findings,
+    newly discovered findings, and previously supported claims that are now
+    contradicted or insufficiently supported.
 """
 
     report = writer.invoke({
         "topic": state["topic"],
         "notes": report_notes,
+        "previous_claims": state.get("previous_claims", []),
+        "historical_comparison": state.get("historical_comparison", {}),
+        "historical_conflicts": state.get("historical_conflicts", []),
     })
 
     return {"final_report": report}
+
+
+# ============================================================
+# NODE 11.5: SAVE CLAIM HISTORY (V3.8)
+# ============================================================
+def save_claim_history_node(state: ResearchState):
+    print("\n[HISTORY] Saving final claim snapshots")
+
+    run_id = state["run_id"]
+    snapshots = [
+        create_claim_snapshot(
+            run_id=run_id,
+            claim=claim,
+        )
+        for claim in state.get("normalized_claims", [])
+        if claim.get("claim")
+    ]
+
+    if snapshots:
+        save_claim_snapshots(snapshots)
+
+    print(f"[HISTORY] Saved {len(snapshots)} claim snapshots")
+    return {"claim_snapshots": snapshots}
+
+
+# ============================================================
+# NODE 12: PERSIST RESEARCH MEMORY (V3.6)
+# ============================================================
+def persist_research_memory_node(state: ResearchState):
+    print("\n[MEMORY] Persisting sources, evidence, and run status")
+
+    run_id = state["run_id"]
+    saved_sources = []
+
+    for source in state.get("sources", []):
+        if source.get("status") != "fetched":
+            continue
+        if not source.get("content"):
+            continue
+
+        _, is_new = save_source(source)
+        saved_sources.append({
+            "url": source["url"],
+            "is_new": is_new,
+        })
+
+    for evidence in state.get("evidence_records", []):
+        if evidence.get("source_id"):
+            save_evidence(
+                run_id=run_id,
+                evidence=evidence,
+            )
+
+    complete_run(run_id)
+
+    persisted_new = [item for item in saved_sources if item["is_new"]]
+    print(
+        f"[MEMORY] Saved {len(saved_sources)} sources "
+        f"({len(persisted_new)} new) and {len(state.get('evidence_records', []))} evidence records"
+    )
+
+    return {"reused_sources": state.get("unchanged_sources", [])}
 
 
 # ============================================================
@@ -660,21 +912,27 @@ def build_research_graph():
     graph = StateGraph(ResearchState)
 
     # Register all nodes
+    graph.add_node("memory_initialization", memory_initialization_node)
     graph.add_node("research_planner", research_planner_node)
     graph.add_node("technical_researcher", technical_researcher)
     graph.add_node("industry_researcher", industry_researcher)
     graph.add_node("aggregator", aggregate_research)
     graph.add_node("reader", reader_node)
+    graph.add_node("incremental_planner", incremental_planning_node)
     graph.add_node("source_intelligence", source_intelligence_node)
     graph.add_node("verifier", verification_node)
     graph.add_node("contradiction", contradiction_node)
+    graph.add_node("historical_comparison", historical_comparison_node)
     graph.add_node("gap_evaluator", gap_evaluation_node)
     graph.add_node("quality_evaluator", quality_evaluation_node)
     graph.add_node("prepare_retry", prepare_retry_node)
     graph.add_node("writer", writer_node)
+    graph.add_node("save_claim_history", save_claim_history_node)
+    graph.add_node("persist_memory", persist_research_memory_node)
 
-    # 1. Plan first
-    graph.add_edge(START, "research_planner")
+    # 1. Initialize persistent memory, then plan
+    graph.add_edge(START, "memory_initialization")
+    graph.add_edge("memory_initialization", "research_planner")
 
     # 2. Fan-out to parallel researchers after planning
     graph.add_edge("research_planner", "technical_researcher")
@@ -686,12 +944,14 @@ def build_research_graph():
         "aggregator",
     )
 
-    # 4. Sequential verification, contradiction, gap & quality pipeline
+    # 4. Sequential verification, contradiction, historical comparison, gap & quality pipeline
     graph.add_edge("aggregator", "reader")
-    graph.add_edge("reader", "source_intelligence")
+    graph.add_edge("reader", "incremental_planner")
+    graph.add_edge("incremental_planner", "source_intelligence")
     graph.add_edge("source_intelligence", "verifier")
     graph.add_edge("verifier", "contradiction")
-    graph.add_edge("contradiction", "gap_evaluator")
+    graph.add_edge("contradiction", "historical_comparison")
+    graph.add_edge("historical_comparison", "gap_evaluator")
     graph.add_edge("gap_evaluator", "quality_evaluator")
 
     # 5. Conditional retry routing after quality evaluation
@@ -708,22 +968,41 @@ def build_research_graph():
     graph.add_edge("prepare_retry", "technical_researcher")
     graph.add_edge("prepare_retry", "industry_researcher")
 
-    # 7. Finish
-    graph.add_edge("writer", END)
+    # 7. Save final claim snapshots & persist memory only after final report
+    graph.add_edge("writer", "save_claim_history")
+    graph.add_edge("save_claim_history", "persist_memory")
+    graph.add_edge("persist_memory", END)
 
     return graph.compile()
 
 
-
+# ============================================================
 # RUN RESEARCH
+# ============================================================
 def run_research(
     topic: str,
     max_retries: int = 2,
 ):
+    init_database()
+    run_id = create_run(topic)
     research_graph = build_research_graph()
 
     initial_state: ResearchState = {
         "topic": topic,
+        "run_id": run_id,
+        "previous_runs": [],
+        "reused_sources": [],
+        "memory_enabled": True,
+        "incremental_plan": {},
+        "unchanged_sources": [],
+        "changed_sources": [],
+        "new_sources": [],
+        "failed_sources": [],
+        "previous_claims": [],
+        "claim_snapshots": [],
+        "historical_comparison": {},
+        "historical_conflicts": [],
+        "historical_review_required": False,
         "research_objective": "",
         "research_questions": [],
         "gap_assessment": {},
@@ -745,7 +1024,19 @@ def run_research(
         "quality_status": "needs_review",
     }
 
-    return research_graph.invoke(initial_state)
+    try:
+        return research_graph.invoke(initial_state)
+    except Exception:
+        # Mark run failed if an exception interrupts execution
+        from memory.database import SessionLocal
+        from memory.models import ResearchRun
+
+        with SessionLocal() as db:
+            run = db.get(ResearchRun, run_id)
+            if run and run.status == "running":
+                run.status = "failed"
+                db.commit()
+        raise
 
 
 if __name__ == "__main__":
