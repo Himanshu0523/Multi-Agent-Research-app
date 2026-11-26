@@ -61,7 +61,7 @@ def create_research_plan(
     max_questions: int = 8,
     config: dict | None = None,
 ) -> dict:
-    llm = get_planning_llm().with_structured_output(
+    structured_llm = get_planning_llm().with_structured_output(
         ResearchPlan
     )
 
@@ -85,7 +85,10 @@ def create_research_plan(
     Return a structured research plan.
     """
 
-    result = llm.invoke(prompt, config=config)
+    result = structured_llm.invoke(
+        prompt,
+        config=config,
+    )
 
     questions = []
     for index, item in enumerate(result.questions, start=1):
@@ -103,8 +106,9 @@ def create_research_plan(
         "research_objective": result.objective,
         "research_questions": questions,
     }
-
-
+    
+    
+    
 # EVIDENCE ID NORMALIZATION
 def normalize_evidence_records(
     evidence_records: list[dict],

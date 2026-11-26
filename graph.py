@@ -457,8 +457,9 @@ def source_intelligence_node(state: ResearchState):
         "source_intelligence": intelligence,
         "source_relationships": relationships,
     }
-
-
+    
+    
+    
 # ============================================================
 # NODE 6: EVIDENCE VERIFICATION
 # ============================================================
