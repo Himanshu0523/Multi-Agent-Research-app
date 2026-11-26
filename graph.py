@@ -5,7 +5,9 @@ from langgraph.graph import StateGraph, START, END
 from observability.tracker import track_node
 from observability.callbacks import TokenUsageCallback
 from observability.metrics import save_model_usage
+from observability.pricing import get_model_pricing
 from observability.usage import tracked_invoke
+from observability.analytics import get_run_analytics
 from agents import build_search_agent, build_writer_chain
 from tools import fetch_document
 from evidence import (
@@ -48,13 +50,6 @@ from memory.history_repository import (
 from memory.historical_conflicts import (
     analyze_historical_changes,
 )
-
-
-# ============================================================
-# MODEL PRICING RATES (USD per 1M tokens for gpt-4o-mini)
-# ============================================================
-INPUT_PRICE_PER_MILLION = 0.15
-OUTPUT_PRICE_PER_MILLION = 0.60
 
 
 # ============================================================
@@ -178,7 +173,7 @@ def memory_initialization_node(state: ResearchState):
 
 
 # ============================================================
-# NODE 0: RESEARCH PLANNER (V3.5 + TOKEN TRACKING)
+# NODE 0: RESEARCH PLANNER (V3.5 + V3.9.3 TOKEN TRACKING)
 # ============================================================
 def research_planner_node(state: ResearchState):
     print("\n[PLANNER] Creating research plan")
@@ -192,16 +187,18 @@ def research_planner_node(state: ResearchState):
     )
 
     usage = usage_tracker.get_summary()
+    pricing = get_model_pricing("gpt-4o-mini")
 
-    save_model_usage(
-        run_id=state["run_id"],
-        node_name="research_planner",
-        model_name="gpt-4o-mini",
-        prompt_tokens=usage["prompt_tokens"],
-        completion_tokens=usage["completion_tokens"],
-        input_price_per_million=INPUT_PRICE_PER_MILLION,
-        output_price_per_million=OUTPUT_PRICE_PER_MILLION,
-    )
+    if usage["prompt_tokens"] or usage["completion_tokens"]:
+        save_model_usage(
+            run_id=state["run_id"],
+            node_name="research_planner",
+            model_name="gpt-4o-mini",
+            prompt_tokens=usage["prompt_tokens"],
+            completion_tokens=usage["completion_tokens"],
+            input_price_per_million=pricing["input"],
+            output_price_per_million=pricing["output"],
+        )
 
     print(f"[PLANNER] Created {len(plan['research_questions'])} questions")
     return plan
@@ -415,26 +412,44 @@ def incremental_planning_node(state: ResearchState):
 
 
 # ============================================================
-# NODE 5: SOURCE INTELLIGENCE
+# NODE 5: SOURCE INTELLIGENCE (V3.9.3 AGGREGATED TOKEN TRACKING)
 # ============================================================
 def source_intelligence_node(state: ResearchState):
     print("\n[SOURCE INTELLIGENCE] Analyzing sources")
 
     fetched_sources = get_successful_sources(state.get("sources", []))
     intelligence = []
+    usage_tracker = TokenUsageCallback()
 
-    for source in fetched_sources:
-        try:
-            metadata = analyze_source(source)
-            llm_metadata = classify_source_with_llm(source)
-            intelligence.append({**metadata, **llm_metadata})
-        except Exception as error:
-            print(f"[SOURCE INTELLIGENCE ERROR] {source.get('url')}: {error}")
-            intelligence.append({
-                "source_id": source.get("source_id"),
-                "analysis_status": "failed",
-                "error": str(error),
-            })
+    try:
+        for source in fetched_sources:
+            try:
+                metadata = analyze_source(source)
+                llm_metadata = classify_source_with_llm(
+                    source,
+                    config={"callbacks": [usage_tracker]},
+                )
+                intelligence.append({**metadata, **llm_metadata})
+            except Exception as error:
+                print(f"[SOURCE INTELLIGENCE ERROR] {source.get('url')}: {error}")
+                intelligence.append({
+                    "source_id": source.get("source_id"),
+                    "analysis_status": "failed",
+                    "error": str(error),
+                })
+    finally:
+        usage = usage_tracker.get_summary()
+        pricing = get_model_pricing("gpt-4o-mini")
+        if usage["prompt_tokens"] or usage["completion_tokens"]:
+            save_model_usage(
+                run_id=state["run_id"],
+                node_name="source_intelligence",
+                model_name="gpt-4o-mini",
+                prompt_tokens=usage["prompt_tokens"],
+                completion_tokens=usage["completion_tokens"],
+                input_price_per_million=pricing["input"],
+                output_price_per_million=pricing["output"],
+            )
 
     relationships = analyze_source_independence(fetched_sources)
 
@@ -589,15 +604,32 @@ def historical_comparison_node(state: ResearchState):
 
 
 # ============================================================
-# NODE 8: GAP EVALUATOR (V3.5)
+# NODE 8: GAP EVALUATOR (V3.5 + V3.9.3 TOKEN TRACKING)
 # ============================================================
 def gap_evaluation_node(state: ResearchState):
     print("\n[GAP EVALUATOR] Checking research coverage")
 
+    usage_tracker = TokenUsageCallback()
+
     assessment = assess_question_coverage(
         research_questions=state.get("research_questions", []),
         evidence_records=state.get("evidence_records", []),
+        config={"callbacks": [usage_tracker]},
     )
+
+    usage = usage_tracker.get_summary()
+    pricing = get_model_pricing("gpt-4o-mini")
+
+    if usage["prompt_tokens"] or usage["completion_tokens"]:
+        save_model_usage(
+            run_id=state["run_id"],
+            node_name="gap_evaluator",
+            model_name="gpt-4o-mini",
+            prompt_tokens=usage["prompt_tokens"],
+            completion_tokens=usage["completion_tokens"],
+            input_price_per_million=pricing["input"],
+            output_price_per_million=pricing["output"],
+        )
 
     feedback = build_gap_feedback(assessment["assessments"])
 
@@ -1053,7 +1085,10 @@ def run_research(
     }
 
     try:
-        return research_graph.invoke(initial_state)
+        result = research_graph.invoke(initial_state)
+        analytics = get_run_analytics(run_id)
+        result["observability"] = analytics
+        return result
     except Exception:
         # Mark run failed if an exception interrupts execution
         from memory.database import SessionLocal
@@ -1075,3 +1110,5 @@ if __name__ == "__main__":
 
     print("\n\n========== FINAL REPORT ==========\n")
     print(result.get("final_report", "No report generated."))
+    print("\n\n========== OBSERVABILITY ANALYTICS ==========\n")
+    print(result.get("observability", {}))

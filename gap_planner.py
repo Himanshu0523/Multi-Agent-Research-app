@@ -1,4 +1,3 @@
-
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -60,7 +59,7 @@ def get_planning_llm():
 def create_research_plan(
     topic: str,
     max_questions: int = 8,
-    config=None,
+    config: dict | None = None,
 ) -> dict:
     llm = get_planning_llm().with_structured_output(
         ResearchPlan
@@ -104,9 +103,8 @@ def create_research_plan(
         "research_objective": result.objective,
         "research_questions": questions,
     }
-    
-    
-    
+
+
 # EVIDENCE ID NORMALIZATION
 def normalize_evidence_records(
     evidence_records: list[dict],
@@ -134,6 +132,7 @@ def normalize_evidence_records(
 def assess_question_coverage(
     research_questions: list[dict],
     evidence_records: list[dict],
+    config: dict | None = None,
 ) -> dict:
 
     if not research_questions:
@@ -189,7 +188,7 @@ Rules:
 9. Return exactly one assessment for every question.
 """
 
-    result = llm.invoke(prompt)
+    result = llm.invoke(prompt, config=config)
 
     returned = {
         item.question_id: item
